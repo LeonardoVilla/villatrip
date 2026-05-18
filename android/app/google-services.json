@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "58471064886",
+    "project_id": "villatrip-64bc3",
+    "storage_bucket": "villatrip-64bc3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:58471064886:android:5c44ce2f86f16d3dc9ff97",
+        "android_client_info": {
+          "package_name": "com.example.projeto1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA0UwASXkINk5kRgN6Lo0PQNenoLpIh8yM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
