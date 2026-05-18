@@ -1988,11 +1988,13 @@ class _DayPlanDetailPageState extends State<DayPlanDetailPage> {
 
   Future<void> _loadData() async {
     try {
-      final items = await _repository.getDayPlanItemDetails(_plan.id!);
+      var items = await _repository.getDayPlanItemDetails(_plan.id!);
       var places = await _repository.getAll();
-      // No web, _webPlaces pode estar vazio se o sync ainda não rodou nesta sessão
-      if (places.isEmpty) {
+      // Sync if local data is missing (e.g. web in-memory cleared on refresh)
+      if (places.isEmpty || (items.isEmpty && _plan.remoteId != null)) {
         await _syncService.sync(_repository);
+        await _syncService.syncDayPlans(_repository);
+        items = await _repository.getDayPlanItemDetails(_plan.id!);
         places = await _repository.getAll();
       }
       if (!mounted) {
