@@ -1947,6 +1947,7 @@ class DayPlanDetailPage extends StatefulWidget {
 
 class _DayPlanDetailPageState extends State<DayPlanDetailPage> {
   final TravelPlaceRepository _repository = TravelPlaceRepository.instance;
+  final FirestoreSyncService _syncService = FirestoreSyncService();
   late DayPlan _plan;
   List<DayPlanItemDetail> _items = const [];
   List<TravelPlace> _places = const [];
@@ -1963,7 +1964,12 @@ class _DayPlanDetailPageState extends State<DayPlanDetailPage> {
   Future<void> _loadData() async {
     try {
       final items = await _repository.getDayPlanItemDetails(_plan.id!);
-      final places = await _repository.getAll();
+      var places = await _repository.getAll();
+      // No web, _webPlaces pode estar vazio se o sync ainda não rodou nesta sessão
+      if (places.isEmpty) {
+        await _syncService.sync(_repository);
+        places = await _repository.getAll();
+      }
       if (!mounted) {
         return;
       }
