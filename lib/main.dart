@@ -796,10 +796,19 @@ class TravelPlaceRepository {
 
   Future<List<DayPlanSummary>> getDayPlanSummaries() async {
     final plans = await getDayPlans();
+    final allPlaces = await getAll();
+    final validPlaceIds = {
+      for (final place in allPlaces)
+        if (place.id != null) place.id!,
+    };
     final List<DayPlanSummary> summaries = <DayPlanSummary>[];
 
     for (final plan in plans) {
-      final items = await getDayPlanItems(plan.id!);
+      final allItems = await getDayPlanItems(plan.id!);
+      // Only count items whose place still exists (same filter as detail page)
+      final items = allItems
+          .where((item) => validPlaceIds.contains(item.placeId))
+          .toList();
       final totalSpent = items.fold<double>(
         0,
         (total, item) => total + item.amountSpent,
@@ -841,8 +850,9 @@ class TravelPlaceRepository {
       final d = s.plan.parsedDate;
       if (from != null && d.isBefore(from)) return false;
       if (to != null &&
-          d.isAfter(DateTime(to.year, to.month, to.day, 23, 59, 59)))
+          d.isAfter(DateTime(to.year, to.month, to.day, 23, 59, 59))) {
         return false;
+      }
       return true;
     }).toList();
     final totalsByDate = <String, double>{};
@@ -1253,6 +1263,21 @@ class FirestoreSyncService {
       await item.reference.delete();
     }
     await planRef.delete();
+  }
+
+  Future<void> deleteDayPlanItemRemote({
+    required String uid,
+    required String planRemoteId,
+    required String itemRemoteId,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('day_plans')
+        .doc(planRemoteId)
+        .collection('items')
+        .doc(itemRemoteId)
+        .delete();
   }
 }
 
@@ -2061,6 +2086,17 @@ class _DayPlanDetailPageState extends State<DayPlanDetailPage> {
       return;
     }
     await _repository.deleteDayPlanItem(detail.item.id!);
+    // Delete from Firestore if synced
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final planRemoteId = _plan.remoteId;
+    final itemRemoteId = detail.item.remoteId;
+    if (uid != null && planRemoteId != null && itemRemoteId != null) {
+      await _syncService.deleteDayPlanItemRemote(
+        uid: uid,
+        planRemoteId: planRemoteId,
+        itemRemoteId: itemRemoteId,
+      );
+    }
     await _loadData();
   }
 
