@@ -1,12 +1,17 @@
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart' as sqflite;
-import 'dart:convert';
+import 'firebase_options.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const TravelPlannerApp());
 }
 
@@ -21,7 +26,29 @@ class TravelPlannerApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
-      home: const PlaceListPage(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasData) {
+          return const PlaceListPage();
+        }
+        return const LoginPage();
+      },
     );
   }
 }
@@ -367,14 +394,9 @@ class TravelPlaceRepository {
   }
 }
 
-class MongoSyncService {
-  MongoSyncService({http.Client? client}) : _client = client ?? http.Client();
-
-  final http.Client _client;
-  static const String _baseUrl = String.fromEnvironment(
-    'MONGO_API_URL',
-    defaultValue: 'http://localhost:3000',
-  );
+class FirestoreSyncService {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static const String _collection = 'places';
 
   Future<SyncSummary> sync(TravelPlaceRepository repository) async {
     int pushed = 0;
@@ -382,44 +404,52 @@ class MongoSyncService {
 
     final pending = await repository.getPendingSync();
     for (final place in pending) {
-      final response = await _client.post(
-        Uri.parse('$_baseUrl/api/places/upsert'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(place.toApiMap()),
-      );
+      final data = <String, Object?>{
+        'name': place.name,
+        'location': place.location,
+        'openingTime': place.openingTime,
+        'closingTime': place.closingTime,
+        'commuteDuration': place.commuteDuration,
+        'transportSchedule': place.transportSchedule,
+        'visited': place.visited,
+        'updatedAt': place.updatedAt,
+      };
 
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception('Falha no push para Mongo: ${response.statusCode}');
+      DocumentReference ref;
+      if (place.remoteId != null) {
+        ref = _firestore.collection(_collection).doc(place.remoteId);
+        await ref.set(data, SetOptions(merge: true));
+      } else {
+        ref = await _firestore.collection(_collection).add(data);
       }
-
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      final remote = body['place'] as Map<String, dynamic>;
-      final remoteId = remote['_id'] as String?;
-      final updatedAt = (remote['updatedAt'] as String?) ?? DateTime.now().toIso8601String();
 
       if (place.id != null) {
         await repository.markSynced(
           localId: place.id!,
-          remoteId: remoteId,
-          updatedAt: updatedAt,
+          remoteId: ref.id,
+          updatedAt: place.updatedAt,
         );
       }
       pushed++;
     }
 
-    final response = await _client.get(Uri.parse('$_baseUrl/api/places'));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Falha no pull do Mongo: ${response.statusCode}');
-    }
-
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final data = (body['places'] as List<dynamic>)
-        .cast<Map<String, dynamic>>()
-        .map(TravelPlace.fromApiMap)
-        .toList();
-
-    for (final place in data) {
-      await repository.upsertFromRemote(place);
+    final snapshot = await _firestore.collection(_collection).get();
+    for (final doc in snapshot.docs) {
+      final data = doc.data();
+      final remote = TravelPlace(
+        id: null,
+        remoteId: doc.id,
+        name: (data['name'] as String?) ?? '',
+        location: (data['location'] as String?) ?? '',
+        openingTime: (data['openingTime'] as String?) ?? '09:00',
+        closingTime: (data['closingTime'] as String?) ?? '18:00',
+        commuteDuration: (data['commuteDuration'] as String?) ?? '',
+        transportSchedule: (data['transportSchedule'] as String?) ?? '',
+        visited: (data['visited'] as bool?) ?? false,
+        updatedAt: (data['updatedAt'] as String?) ?? DateTime.now().toIso8601String(),
+        needsSync: false,
+      );
+      await repository.upsertFromRemote(remote);
       pulled++;
     }
 
@@ -427,10 +457,7 @@ class MongoSyncService {
   }
 
   Future<void> deleteRemoteById(String remoteId) async {
-    final response = await _client.delete(Uri.parse('$_baseUrl/api/places/$remoteId'));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Falha ao excluir no Mongo: ${response.statusCode}');
-    }
+    await _firestore.collection(_collection).doc(remoteId).delete();
   }
 }
 
@@ -449,7 +476,7 @@ class PlaceListPage extends StatefulWidget {
 
 class _PlaceListPageState extends State<PlaceListPage> {
   final TravelPlaceRepository _repository = TravelPlaceRepository.instance;
-  final MongoSyncService _syncService = MongoSyncService();
+  final FirestoreSyncService _syncService = FirestoreSyncService();
   List<TravelPlace> _places = const [];
   bool _isLoading = true;
   bool _isSyncing = false;
@@ -458,7 +485,7 @@ class _PlaceListPageState extends State<PlaceListPage> {
   @override
   void initState() {
     super.initState();
-    _loadPlaces();
+    _loadPlaces().then((_) => _syncNow(silent: true));
   }
 
   Future<void> _loadPlaces() async {
@@ -501,12 +528,14 @@ class _PlaceListPageState extends State<PlaceListPage> {
 
     if (saved == true) {
       await _loadPlaces();
+      await _syncNow(silent: true);
     }
   }
 
   Future<void> _toggleVisited(TravelPlace place, bool value) async {
     await _repository.update(place.copyWith(visited: value));
     await _loadPlaces();
+    await _syncNow(silent: true);
   }
 
   Future<void> _deletePlace(TravelPlace place) async {
@@ -526,7 +555,7 @@ class _PlaceListPageState extends State<PlaceListPage> {
     await _loadPlaces();
   }
 
-  Future<void> _syncNow() async {
+  Future<void> _syncNow({bool silent = false}) async {
     if (_isSyncing) {
       return;
     }
@@ -540,18 +569,22 @@ class _PlaceListPageState extends State<PlaceListPage> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Sincronizado. Enviados: ${result.pushed}, recebidos: ${result.pulled}.'),
-        ),
-      );
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sincronizado. Enviados: ${result.pushed}, recebidos: ${result.pulled}.'),
+          ),
+        );
+      }
     } catch (error) {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro na sincronizacao: $error')),
-      );
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro na sincronizacao: $error')),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -568,7 +601,7 @@ class _PlaceListPageState extends State<PlaceListPage> {
         title: const Text('Roteiro de Viagens'),
         actions: [
           IconButton(
-            tooltip: 'Sincronizar com Mongo',
+            tooltip: 'Sincronizar com Firebase',
             onPressed: _isSyncing ? null : _syncNow,
             icon: _isSyncing
                 ? const SizedBox(
@@ -577,6 +610,13 @@ class _PlaceListPageState extends State<PlaceListPage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.sync),
+          ),
+          IconButton(
+            tooltip: 'Sair',
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+            },
           ),
         ],
       ),
@@ -655,18 +695,52 @@ class _PlaceListPageState extends State<PlaceListPage> {
                             _toggleVisited(place, value);
                           },
                         ),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (value) {
-                            if (value == 'edit') {
-                              _openPlaceForm(place);
-                            }
-                            if (value == 'delete') {
-                              _deletePlace(place);
-                            }
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(value: 'edit', child: Text('Editar')),
-                            PopupMenuItem(value: 'delete', child: Text('Excluir')),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Tooltip(
+                                  message: 'Salvo localmente (SQLite)',
+                                  child: Icon(
+                                    Icons.storage,
+                                    size: 16,
+                                    color: Colors.green[700],
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Tooltip(
+                                  message: place.remoteId != null && !place.needsSync
+                                      ? 'Sincronizado com Firebase'
+                                      : 'Pendente de sincronização',
+                                  child: Icon(
+                                    place.remoteId != null && !place.needsSync
+                                        ? Icons.cloud_done
+                                        : Icons.cloud_upload,
+                                    size: 16,
+                                    color: place.remoteId != null && !place.needsSync
+                                        ? Colors.blue[600]
+                                        : Colors.orange[400],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(width: 4),
+                            PopupMenuButton<String>(
+                              onSelected: (value) {
+                                if (value == 'edit') {
+                                  _openPlaceForm(place);
+                                }
+                                if (value == 'delete') {
+                                  _deletePlace(place);
+                                }
+                              },
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(value: 'edit', child: Text('Editar')),
+                                PopupMenuItem(value: 'delete', child: Text('Excluir')),
+                              ],
+                            ),
                           ],
                         ),
                       ),
@@ -909,6 +983,171 @@ class _PlaceFormSheetState extends State<PlaceFormSheet> {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _signIn() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+    } on FirebaseAuthException catch (e) {
+      setState(() {
+        _errorMessage = switch (e.code) {
+          'user-not-found' || 'invalid-credential' => 'Email ou senha incorretos.',
+          'wrong-password' => 'Senha incorreta.',
+          'invalid-email' => 'Email invalido.',
+          'user-disabled' => 'Conta desativada.',
+          'too-many-requests' => 'Muitas tentativas. Tente mais tarde.',
+          _ => 'Erro ao entrar: ${e.message}',
+        };
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.travel_explore, size: 72, color: colors.primary),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Roteiro de Viagens',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Entre com sua conta para continuar',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                    ),
+                    const SizedBox(height: 32),
+                    TextFormField(
+                      controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      autofillHints: const [AutofillHints.email],
+                      decoration: const InputDecoration(
+                        labelText: 'Email',
+                        prefixIcon: Icon(Icons.email_outlined),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) =>
+                          (v == null || v.trim().isEmpty) ? 'Informe o email' : null,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: _obscurePassword,
+                      autofillHints: const [AutofillHints.password],
+                      decoration: InputDecoration(
+                        labelText: 'Senha',
+                        prefixIcon: const Icon(Icons.lock_outlined),
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                          onPressed: () =>
+                              setState(() => _obscurePassword = !_obscurePassword),
+                        ),
+                      ),
+                      validator: (v) =>
+                          (v == null || v.length < 6) ? 'Minimo 6 caracteres' : null,
+                      onFieldSubmitted: (_) => _signIn(),
+                    ),
+                    if (_errorMessage != null) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: colors.errorContainer,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.error_outline, color: colors.onErrorContainer),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _errorMessage!,
+                                style: TextStyle(color: colors.onErrorContainer),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _isLoading ? null : _signIn,
+                        icon: _isLoading
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.login),
+                        label: Text(_isLoading ? 'Entrando...' : 'Entrar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
       ),

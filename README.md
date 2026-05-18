@@ -1,17 +1,54 @@
-# projeto1
+# Roteiro de Viagens
 
-A new Flutter project.
+App Flutter offline-first para gerenciar roteiro de viagens. Os dados ficam no SQLite local e podem ser sincronizados com MongoDB via uma API Node/Express.
 
-## Getting Started
+## Funcionalidades
 
-This project is a starting point for a Flutter application.
+- Cadastrar locais para visitar
+- Informar localização/endereço
+- Marcar locais como visitados
+- Definir horários de funcionamento
+- Definir tempo de deslocamento e horários de transporte
+- Sincronizar alterações locais com MongoDB
 
-A few resources to get you started if this is your first Flutter project:
+## Como rodar o backend Mongo
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+1. Entre na pasta `backend`
+2. Crie um arquivo `.env` com base em `.env.example`
+3. Ajuste `MONGO_URI` para sua instância MongoDB
+4. Execute:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+npm install
+npm start
+```
+
+Por padrão, a API sobe em `http://localhost:3000`.
+
+## Como rodar o Flutter
+
+```bash
+flutter pub get
+flutter run
+```
+
+Se estiver usando Android Emulator, o app usa automaticamente `http://10.0.2.2:3000` para falar com o backend local.
+
+## Definir outra URL da API
+
+Você pode sobrescrever a URL do backend com:
+
+```bash
+flutter run --dart-define=MONGO_API_URL=http://seu-servidor:3000
+```
+
+## Sincronização
+
+Toque no ícone de sincronização na barra superior para:
+
+- enviar itens locais pendentes para o Mongo
+- baixar os itens do Mongo e atualizar o SQLite local
+
+## Observação
+
+No navegador, o app funciona para testes, mas a camada local usa memória em vez de SQLite persistente. Em mobile/desktop nativo, ele usa SQLite local de verdade.
