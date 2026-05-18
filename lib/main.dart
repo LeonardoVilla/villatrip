@@ -1056,7 +1056,26 @@ class _LoginPageState extends State<LoginPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.travel_explore, size: 72, color: colors.primary),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.asset(
+                        'assets/images/iconetelalogin.png',
+                        height: 180,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => Container(
+                          height: 180,
+                          width: double.infinity,
+                          alignment: Alignment.center,
+                          color: colors.surfaceContainerHighest,
+                          child: Icon(
+                            Icons.image_outlined,
+                            size: 48,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     Text(
                       'Roteiro de Viagens',
